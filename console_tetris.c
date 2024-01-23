@@ -1,4 +1,4 @@
-#include "curses.h"
+#include <curses.h>
 #include <stdio.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -16,6 +16,11 @@
 // don't use so many global variables
 // only need to check for dropped rows when a tetromino gets locked
 // better push down handling
+// some abiguity using "rows" some places and "lines" other places
+// decouple lines cleared and level so you can start on whatever level you want
+// ugly global variables
+// clean up screen refresh triggers
+// speed up screen refresh by not redrawing unchanged pixels
 
 #define BOARD_HEIGHT 20
 #define BOARD_WIDTH  10
@@ -65,11 +70,35 @@ int color_map[] = {
     COLOR_WHITE,
 };
 
+// number of milliseconds to wait between dropping the active tetromino down
+// for each level up to level 29
+int drop_delay_levels[] = {
+// 0 - 9
+800, 717, 633, 550, 467, 383, 300, 217, 133, 100,
+// 10 - 12
+83, 83, 83,
+// 13 - 15
+67, 67, 67,
+// 16 - 18
+50, 50, 50,
+// 19 - 28
+33, 33, 33, 33, 33, 33, 33, 33, 33, 33,
+// 29+
+17
+};
+
 // game board will reflect all the locked (not falling) minos on screen
 enum mino board[BOARD_HEIGHT*BOARD_WIDTH];
 struct tetromino current_tetromino;
 bool game_active = true;
-int drop_delay_ms = 300; // TODO: this is janky
+
+// only redraw the screen when something changes
+bool screen_refresh = true;
+
+// Manually starting at level 18, TODO this is junk fix this
+int drop_delay_ms = 50;
+int lines_cleared = 180;
+int level = 18;
 
 // which rows on the board are cleared and need to be removed
 // -1 uninitialized
@@ -284,6 +313,16 @@ struct info *tetromino_types[] = {
     &tetromino_s,
 };
 
+void update_level_and_speed()
+{
+    level = lines_cleared / 10;
+    if (level < SIZE(drop_delay_levels)) {
+        drop_delay_ms = drop_delay_levels[level];
+    } else {
+        drop_delay_ms = drop_delay_levels[SIZE(drop_delay_levels)-1];
+    }
+}
+
 // searches for completed rows on the game board
 // clears all minos from these rows
 // for animation reasons, don't drop the rows down yet
@@ -303,6 +342,8 @@ void clear_completed_rows()
             }
         }
         if (row_complete) {
+            lines_cleared++;
+            update_level_and_speed();
             cleared_rows[i++] = y;
             for (int x=0; x<BOARD_WIDTH; x++) {
                 BOARD(x,y) = MINO_NONE;
@@ -342,6 +383,7 @@ void drop_rows()
             // drop all rows above down 1 until the next cleared row
             // if this is the second cleared row, drop down 2...
             drop_row_n(y, i+1);
+            screen_refresh = true;
         }
         i++;
     }
@@ -377,6 +419,7 @@ void tetris_setup()
 #define SCREEN_Y(y) (BOARD_HEIGHT - y + 1)
 
 // convert the game coords to screen coords and draw a mino
+// TODO allow drawing a mino outside of the game board (for next box)
 void draw_mino(unsigned int x, unsigned int y, enum mino m) {
     if (WITHIN_BOARD(x,y)) {
         attron(COLOR_PAIR(m)); 
@@ -509,6 +552,7 @@ void tetromino_to_board(struct tetromino *t) {
     }
 
     new_active_tetromino();
+    screen_refresh = true;
 }
 
 void drop_tetromino()
@@ -522,6 +566,7 @@ void drop_tetromino()
         tetromino_to_board(&current_tetromino);
     } else {
         current_tetromino.origin.y--;
+        screen_refresh = true;
     }
 }
 
@@ -533,6 +578,7 @@ void move_tetromino_r()
     t.origin.x++;
     if (!tetromino_intersects(&t)) {
         current_tetromino.origin.x++;
+        screen_refresh = true;
     }
 
 }
@@ -545,6 +591,7 @@ void move_tetromino_l()
     t.origin.x--;
     if (!tetromino_intersects(&t)) {
         current_tetromino.origin.x--;
+        screen_refresh = true;
     }
 }
 
@@ -556,6 +603,7 @@ void rotate_tetromino_r()
     t.rotation_state = (t.rotation_state + 1) % t.info->num_rotations;
     if (!tetromino_intersects(&t)) {
         current_tetromino.rotation_state = t.rotation_state;
+        screen_refresh = true;
     }
 }
 
@@ -567,6 +615,7 @@ void rotate_tetromino_l()
     t.rotation_state = (t.rotation_state - 1) % t.info->num_rotations;
     if (!tetromino_intersects(&t)) {
         current_tetromino.rotation_state = t.rotation_state;
+        screen_refresh = true;
     }
 }
 
@@ -642,15 +691,19 @@ int main()
     struct keymask keys = {0};
     while (game_active) {
         millis = get_millis();
-        draw_board();
-        draw_tetromino();
-        refresh();
+        if (screen_refresh) {
+            draw_board();
+            draw_tetromino();
+            refresh();
+            screen_refresh = false;
+        }
         clear_completed_rows();
         drop_rows();
         process_user_input(&keys);
         if (millis - last_drop_ms > drop_delay_ms) {
             drop_tetromino(); 
             last_drop_ms = millis;
+            screen_refresh = true;
         }
     }
 
