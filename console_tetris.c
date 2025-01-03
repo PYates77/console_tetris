@@ -7,23 +7,29 @@
 
 // TODO
 // color schemes for levels
-// next piece dispay
 // score
 // friendly game over
-// border
+// border for game board and next box
 // delay and/or animation for clearing rows
-// cleared_rows heavily relies on 4 as magic number
 // don't use so many global variables
-// only need to check for dropped rows when a tetromino gets locked
 // better push down handling
 // some abiguity using "rows" some places and "lines" other places
 // decouple lines cleared and level so you can start on whatever level you want
-// ugly global variables
+// ugly global variables (double-buffer screen?)
+// fix awkward attron/attroff clearing of minos
 // clean up screen refresh triggers
 // speed up screen refresh by not redrawing unchanged pixels
 
+#define MINOS_IN_TETROMINO 4
+
 #define BOARD_HEIGHT 20
 #define BOARD_WIDTH  10
+
+#define NEXT_BOX_X 15
+#define NEXT_BOX_Y 5
+#define NEXT_BOX_HEIGHT 5
+#define NEXT_BOX_WIDTH 5
+#define NEXT_BOX_OFFSET 2
 
 // generic array sizeof
 #define SIZE(x) sizeof(x)/sizeof(x[0])
@@ -90,20 +96,21 @@ int drop_delay_levels[] = {
 // game board will reflect all the locked (not falling) minos on screen
 enum mino board[BOARD_HEIGHT*BOARD_WIDTH];
 struct tetromino current_tetromino;
+unsigned int next_tetromino;
 bool game_active = true;
 
 // only redraw the screen when something changes
 bool screen_refresh = true;
 
-// Manually starting at level 18, TODO this is junk fix this
+// Manually starting at level 18, // TODO this is junk fix this
 int drop_delay_ms = 50;
 int lines_cleared = 180;
 int level = 18;
 
 // which rows on the board are cleared and need to be removed
 // -1 uninitialized
-// a maximum of 4 rows can be cleared at once in tetris
-int cleared_rows[4];
+// the maximum cleared rows is number of minos in a tetromino (4)
+int cleared_rows[MINOS_IN_TETROMINO];
 
 // generic vec2 struct
 struct coord {
@@ -113,7 +120,7 @@ struct coord {
 
 // tetrominos are stored as a list of mino offsets from the origin
 struct offsets {
-    struct coord coords[4];
+    struct coord coords[MINOS_IN_TETROMINO];
 };
 
 // each tetromino has a set of rotation states
@@ -121,12 +128,12 @@ struct offsets {
 struct info {
     enum mino type;
     unsigned int num_rotations;
-    struct offsets rotation[4];
+    struct offsets rotation[MINOS_IN_TETROMINO];
 };
 
 // Stores all information about the currently falling tetromino
 // Each tetromino has an origin indicating its location on the board
-// and a list of offsets which indicate where each mino in the 
+// and a list of offsets which indicate where each mino in the
 // tetromino should be relative to the offset
 // each tetromino has a different set of offsets based on its rotation state
 // some tetrominos have only 2 rotation states whereas most have 4
@@ -326,10 +333,11 @@ void update_level_and_speed()
 // searches for completed rows on the game board
 // clears all minos from these rows
 // for animation reasons, don't drop the rows down yet
-void clear_completed_rows()
+int clear_completed_rows()
 {
     int i;
-    for (i=0; i<4; i++) {
+    int num_cleared = 0;
+    for (i=0; i<SIZE(cleared_rows); i++) {
         cleared_rows[i] = -1;
     }
     i=0;
@@ -342,6 +350,7 @@ void clear_completed_rows()
             }
         }
         if (row_complete) {
+	    num_cleared++;
             lines_cleared++;
             update_level_and_speed();
             cleared_rows[i++] = y;
@@ -350,6 +359,7 @@ void clear_completed_rows()
             }
         }
     }
+    return num_cleared;
 }
 
 // take the row at y and copy it into the row n below
@@ -368,11 +378,11 @@ void drop_rows()
 {
     int i=0;
     // negative number in cleared_rows array means no more rows to clear
-    while (i<4 && cleared_rows[i] >= 0 && cleared_rows[i]+1<=BOARD_HEIGHT) {
+    while (i<SIZE(cleared_rows) && cleared_rows[i] >= 0 && cleared_rows[i]+1<=BOARD_HEIGHT) {
         // if this is the last row to clear
         // drop lines all the way up to the top of the screen
         int z;
-        if ((i+1 >= 4) || cleared_rows[i+1] < 0) {
+        if ((i+1 >= SIZE(cleared_rows)) || cleared_rows[i+1] < 0) {
             z = BOARD_HEIGHT;
         } else {
             z = cleared_rows[i+1];
@@ -389,40 +399,13 @@ void drop_rows()
     }
 }
 
-void new_active_tetromino() {
-    // select a random tetromino type
-    unsigned int chosen_tetromino = rand() % SIZE(tetromino_types);
-    //printf("Choose tetromino %d\n", chosen_tetromino);
-    current_tetromino.info = tetromino_types[chosen_tetromino];
-
-    current_tetromino.origin.x = BOARD_WIDTH/2;
-    current_tetromino.origin.y = BOARD_HEIGHT-1;
-
-    current_tetromino.rotation_state = 0;
-}
-
-void tetris_setup() 
-{
-    //printf("Filling board minos\n");
-    for (int y=0; y<BOARD_HEIGHT; y++) {
-        for (int x=0; x<BOARD_WIDTH; x++) {
-            BOARD(x,y) = MINO_NONE;
-        }
-    }
-
-    //printf("Making falling tetromino\n");
-    new_active_tetromino();
-}
-
-
 #define SCREEN_X(x) (2*x+1)
 #define SCREEN_Y(y) (BOARD_HEIGHT - y + 1)
 
 // convert the game coords to screen coords and draw a mino
-// TODO allow drawing a mino outside of the game board (for next box)
-void draw_mino(unsigned int x, unsigned int y, enum mino m) {
-    if (WITHIN_BOARD(x,y)) {
-        attron(COLOR_PAIR(m)); 
+void draw_mino(unsigned int x, unsigned int y, enum mino m, bool nextbox) {
+    if (WITHIN_BOARD(x,y) || nextbox) {
+        attron(COLOR_PAIR(m));
         mvaddch(SCREEN_Y(y),SCREEN_X(x), '[');
         mvaddch(SCREEN_Y(y),SCREEN_X(x)+1, ']');
     }
@@ -434,26 +417,79 @@ void draw_board()
     for (int y=0; y<BOARD_HEIGHT; y++) {
         for(int x=0; x<BOARD_WIDTH; x++) {
             if (BOARD(x,y) > 0) {
-                draw_mino(x,y, BOARD(x,y));
+                draw_mino(x,y, BOARD(x,y), false);
             } else {
+		// TODO: break this out into a function for this?
                 attron(COLOR_PAIR(EMPTY_COLOR));
                 mvaddch(SCREEN_Y(y),SCREEN_X(x), ' ');
                 mvaddch(SCREEN_Y(y),SCREEN_X(x)+1, ' ');
             }
         }
     }
-
 }
 
-void draw_tetromino() 
+void draw_tetromino()
 {
     struct tetromino *c = &current_tetromino;
-    for (int i=0; i<4; i++) {
+    for (int i=0; i<MINOS_IN_TETROMINO; i++) {
         int x = c->origin.x + c->info->rotation[c->rotation_state].coords[i].x;
         int y = c->origin.y + c->info->rotation[c->rotation_state].coords[i].y;
-        draw_mino(x, y, c->info->type);
+        draw_mino(x, y, c->info->type, false);
     }
 }
+
+void draw_next_tetromino(bool clear)
+{
+    struct tetromino n;
+    n.info = tetromino_types[next_tetromino];
+    n.rotation_state = 0;
+    n.origin.x = NEXT_BOX_X;
+    n.origin.y = NEXT_BOX_Y;
+
+    for (int i=0; i<MINOS_IN_TETROMINO; i++) {
+        int x = n.origin.x + n.info->rotation[n.rotation_state].coords[i].x;
+        int y = n.origin.y + n.info->rotation[n.rotation_state].coords[i].y;
+	if (clear) {
+	    attron(COLOR_PAIR(EMPTY_COLOR));
+	    mvaddch(SCREEN_Y(y),SCREEN_X(x), ' ');
+	    mvaddch(SCREEN_Y(y),SCREEN_X(x)+1, ' ');
+        } else {
+            draw_mino(x, y, n.info->type, true);
+	}
+    }
+}
+
+void new_active_tetromino() {
+    // set current tetromino to next tetromino
+    //printf("Choose tetromino %d\n", chosen_tetromino);
+    current_tetromino.info = tetromino_types[next_tetromino];
+
+    current_tetromino.origin.x = BOARD_WIDTH/2;
+    current_tetromino.origin.y = BOARD_HEIGHT-1;
+
+    current_tetromino.rotation_state = 0;
+
+    // select a random tetromino type
+    draw_next_tetromino(true);
+    next_tetromino = rand() % SIZE(tetromino_types);
+    draw_next_tetromino(false);
+}
+
+void tetris_setup()
+{
+    //printf("Filling board minos\n");
+    for (int y=0; y<BOARD_HEIGHT; y++) {
+        for (int x=0; x<BOARD_WIDTH; x++) {
+            BOARD(x,y) = MINO_NONE;
+        }
+    }
+
+    //printf("Making falling tetromino\n");
+    next_tetromino = rand() % SIZE(tetromino_types);
+    new_active_tetromino();
+}
+
+
 
 void curses_setup() {
     initscr();
@@ -518,7 +554,7 @@ void get_user_input(struct keymask *keys) {
 bool tetromino_intersects(struct tetromino *t) {
     // iterate across 4 minos of current tetromino
     struct offsets *o = &t->info->rotation[t->rotation_state];
-    for (int i=0; i<4; i++) {
+    for (int i=0; i<MINOS_IN_TETROMINO; i++) {
         int x = t->origin.x + o->coords[i].x;
         int y = t->origin.y + o->coords[i].y;
 
@@ -537,16 +573,15 @@ bool tetromino_intersects(struct tetromino *t) {
 void tetromino_to_board(struct tetromino *t) {
     // iterate across 4 minos of current tetromino
     struct offsets *o = &t->info->rotation[t->rotation_state];
-    for (int i=0; i<4; i++) {
+    for (int i=0; i<MINOS_IN_TETROMINO; i++) {
         int x = t->origin.x + o->coords[i].x;
         int y = t->origin.y + o->coords[i].y;
         if (y >= BOARD_HEIGHT || BOARD(x,y) != MINO_NONE) {
             printf("\r\nGame Over\n\r"); // TODO fix this
-            game_active = false;    
+            game_active = false;
         }
 
         if (WITHIN_BOARD(x,y)) {
-             
             BOARD(x,y) = t->info->type;
         }
     }
@@ -665,7 +700,6 @@ void process_user_input(struct keymask *prev_keys)
     } else {
         drop_delay_ms = 300;
     }
-        
 
     // copy new keys to old key struct
     *prev_keys = keys;
@@ -697,11 +731,13 @@ int main()
             refresh();
             screen_refresh = false;
         }
-        clear_completed_rows();
-        drop_rows();
+        int num_cleared = clear_completed_rows();
+	if (num_cleared > 0) {
+	    drop_rows();
+	}
         process_user_input(&keys);
         if (millis - last_drop_ms > drop_delay_ms) {
-            drop_tetromino(); 
+            drop_tetromino();
             last_drop_ms = millis;
             screen_refresh = true;
         }
