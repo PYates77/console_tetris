@@ -9,7 +9,7 @@
 // color schemes for levels
 // score
 // friendly game over
-// border for game board and next box
+// border box
 // delay and/or animation for clearing rows
 // don't use so many global variables
 // better push down handling
@@ -41,7 +41,8 @@
 #define WITHIN_BOARD(x,y) (x>=0 && x<BOARD_WIDTH && y>=0 && y<BOARD_HEIGHT)
 
 // The last curses color pair will be our board empty color
-#define EMPTY_COLOR COLOR_PAIRS-1
+#define EMPTY_COLOR 11
+#define BORDER_COLOR 10
 
 // multiple keys can be pressed at once
 struct keymask {
@@ -67,7 +68,7 @@ enum mino {
 // Maps to enum mino
 int color_map[] = {
     COLOR_BLACK,
-    COLOR_WHITE,
+    COLOR_RED,
     COLOR_BLUE,
     COLOR_MAGENTA,
     COLOR_GREEN,
@@ -399,7 +400,7 @@ void drop_rows()
     }
 }
 
-#define SCREEN_X(x) (2*x+1)
+#define SCREEN_X(x) (2*x+2)
 #define SCREEN_Y(y) (BOARD_HEIGHT - y + 1)
 
 // convert the game coords to screen coords and draw a mino
@@ -411,6 +412,23 @@ void draw_mino(unsigned int x, unsigned int y, enum mino m, bool nextbox) {
     }
 }
 
+void draw_borders()
+{
+    attron(COLOR_PAIR(BORDER_COLOR));
+
+    for(int y=0; y<=BOARD_HEIGHT+1; ++y) {
+        mvaddch(y,0,'x');
+        mvaddch(y,1,'x');
+        mvaddch(y,SCREEN_X(BOARD_WIDTH+1)-1,'x');
+        mvaddch(y,SCREEN_X(BOARD_WIDTH+1),'x');
+    }
+    for (int x=0; x<=BOARD_WIDTH+1; ++x) {
+        mvaddch(SCREEN_Y(-1),2*x, 'x');
+        mvaddch(SCREEN_Y(-1),2*x+1, 'x');
+    }
+    attroff(A_BOLD);
+}
+
 // draw all minos on the board which are not currently falling
 void draw_board()
 {
@@ -419,13 +437,15 @@ void draw_board()
             if (BOARD(x,y) > 0) {
                 draw_mino(x,y, BOARD(x,y), false);
             } else {
-		// TODO: break this out into a function for this?
+                // TODO: break this out into a function for this?
                 attron(COLOR_PAIR(EMPTY_COLOR));
                 mvaddch(SCREEN_Y(y),SCREEN_X(x), ' ');
                 mvaddch(SCREEN_Y(y),SCREEN_X(x)+1, ' ');
             }
         }
     }
+
+    draw_borders();
 }
 
 void draw_tetromino()
@@ -438,6 +458,9 @@ void draw_tetromino()
     }
 }
 
+/**
+ * Draw the upcoming tetromino in the next box
+ */
 void draw_next_tetromino(bool clear)
 {
     struct tetromino n;
@@ -449,13 +472,14 @@ void draw_next_tetromino(bool clear)
     for (int i=0; i<MINOS_IN_TETROMINO; i++) {
         int x = n.origin.x + n.info->rotation[n.rotation_state].coords[i].x;
         int y = n.origin.y + n.info->rotation[n.rotation_state].coords[i].y;
-	if (clear) {
-	    attron(COLOR_PAIR(EMPTY_COLOR));
-	    mvaddch(SCREEN_Y(y),SCREEN_X(x), ' ');
-	    mvaddch(SCREEN_Y(y),SCREEN_X(x)+1, ' ');
+
+        if (clear) {
+            attron(COLOR_PAIR(EMPTY_COLOR));
+            mvaddch(SCREEN_Y(y),SCREEN_X(x), ' ');
+            mvaddch(SCREEN_Y(y),SCREEN_X(x)+1, ' ');
         } else {
             draw_mino(x, y, n.info->type, true);
-	}
+        }
     }
 }
 
@@ -489,8 +513,6 @@ void tetris_setup()
     new_active_tetromino();
 }
 
-
-
 void curses_setup() {
     initscr();
     start_color();
@@ -508,6 +530,7 @@ void curses_setup() {
     init_pair(MINO_S, color_map[MINO_S], color_map[MINO_S]);
     init_pair(MINO_Z, color_map[MINO_Z], color_map[MINO_Z]);
     init_pair(MINO_O, color_map[MINO_O], color_map[MINO_O]);
+    init_pair(BORDER_COLOR, COLOR_WHITE, COLOR_WHITE);
     init_pair(EMPTY_COLOR, COLOR_WHITE, COLOR_BLACK);
 }
 
